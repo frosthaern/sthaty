@@ -1,7 +1,11 @@
+from collections import defaultdict
 from typing import Callable, List
+
+import numpy as np
 import orjson as json
 import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from tqdm import tqdm
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 
 class DataSet:
@@ -14,7 +18,6 @@ class DataSet:
 
 
 def convert_jsonl_to_list_str(jsonl_file_path: str, max_lines: int = 50) -> List[str]:
-    """Convert JSONL file to list of strings, with optional limit on number of lines"""
     with open(jsonl_file_path, "r") as f:
         res: List[str] = []
         for i, line in enumerate(f):
@@ -29,8 +32,7 @@ class Tokenizer:
     def __init__(self, model: str, texts: List[str]):
         self.tokenizer = AutoTokenizer.from_pretrained(model)
         self.model = AutoModelForSequenceClassification.from_pretrained(
-            model,
-            attn_implementation="eager"
+            model, attn_implementation="eager"
         )
         self.texts: List[str] = texts
 
@@ -38,28 +40,66 @@ class Tokenizer:
         tokens = self.tokenizer.tokenize(text)
         return tokens
 
-    def encode(self, text: str) -> dict:
-        """Encode text and return both input_ids and attention_mask"""
-        encoded = self.tokenizer.encode_plus(
-            text,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=512,
-        )
+    def encode(self, texts: List[str]) -> dict:
+        encoded = defaultdict(list)
+        for text in texts:
+            encoded_ = self.tokenizer.encode_plus(
+                text,
+                return_tensors="pt",
+                padding="max_length",
+                truncation=True,
+                max_length=512,
+            )
+            for k, v in encoded_.items():
+                encoded[k].append(v)
         return encoded
 
-    def get_attention_heads(self) -> List[torch.Tensor]:
-        res = []
-        for text in self.texts:
-            encoded = self.encode(text)
+    def _process_batch(self, texts: List[str]) -> np.ndarray:
+        encoded = self.encode(texts)
+
+        device = next(self.model.parameters()).device
+        encoded = {k: v.to(device) for k, v in encoded.items()}
+
+        with torch.no_grad():
             outputs = self.model(
-                encoded['input_ids'],
-                attention_mask=encoded['attention_mask'],
-                output_attentions=True
+                input_ids=encoded["input_ids"],
+                attention_mask=encoded["attention_mask"],
+                output_attentions=True,
             )
-            res.append(outputs.attentions)
-        return res
+            batch_attentions = np.stack(
+                [
+                    np.stack([attn.detach().cpu().numpy() for attn in layer_attentions])
+                    for layer_attentions in zip(*outputs.attentions)
+                ],
+                axis=1,
+            )
+
+        return batch_attentions
+
+    def get_attention_heads(self, batch_size: int = 8) -> np.ndarray:
+        all_attentions = []
+        num_batches = (len(self.texts) + batch_size - 1) // batch_size
+
+        with tqdm(
+            total=len(self.texts),
+            desc="Processing batches",
+            unit="text",
+            dynamic_ncols=True,
+        ) as pbar:
+            for i in range(0, len(self.texts), batch_size):
+                batch_texts = self.texts[i : i + batch_size]
+                batch_attentions = self._process_batch(batch_texts)
+                all_attentions.append(batch_attentions)
+                pbar.update(len(batch_texts))
+
+                pbar.set_postfix(
+                    {
+                        "batch": f"{i // batch_size + 1}/{num_batches}",
+                        "batch_size": len(batch_texts),
+                    }
+                )
+
+        return np.concatenate(all_attentions, axis=0)
 
 
 def main():
@@ -69,7 +109,7 @@ def main():
     tokenizer = Tokenizer("microsoft/codebert-base", dataset.data)
     attention_heads = tokenizer.get_attention_heads()
 
-    print(len(attention_heads))
+    print(attention_heads.shape)
 
 
 if __name__ == "__main__":
