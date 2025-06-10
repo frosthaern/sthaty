@@ -1,18 +1,29 @@
 from typing import Callable, List
+import orjson as json
 
 
 class DataSet:
-    def __init__(self, file_path):
+    def __init__(self, file_path: str):
         self.file_path = file_path
-        self.data = self.load_data()
+        self.data: List[str] = []
 
     def load_data(self, conversion_function: Callable[[str], List[str]]):
-        with open(self.file_path, "r") as f:
-            self.data = conversion_function(f)
+        self.data = conversion_function(self.file_path)
+
+
+def convert_jsonl_to_list_str(jsonl_file_path: str) -> List[str]:
+    with open(jsonl_file_path, "r") as f:
+        res: List[str] = []
+        for line in f:
+            data = json.loads(line)
+            res.append(f"{data['query']}{data['code']}")
+        return res
 
 
 def main():
-    pass
+    dataset = DataSet("dataset.json")
+    dataset.load_data(convert_jsonl_to_list_str)
+    print(len(dataset.data))
 
 
 if __name__ == "__main__":
