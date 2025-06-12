@@ -9,11 +9,11 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 
 class DataSet:
-    def __init__(self, file_path: str):
+    def __init__(self, file_path: str) -> None:
         self.file_path = file_path
         self.data: List[str] = []
 
-    def load_data(self, conversion_function: Callable[[str], List[str]]):
+    def load_data(self, conversion_function: Callable[[str], List[str]]) -> None:
         self.data = conversion_function(self.file_path)
 
 
@@ -23,13 +23,13 @@ def convert_jsonl_to_list_str(jsonl_file_path: str, max_lines: int = 50) -> List
         for i, line in enumerate(f):
             if i >= max_lines:
                 break
-            data = json.loads(line)
+            data: dict[str, str] = json.loads(line)
             res.append(f"<s>{data['query']}</s>{data['code']}</s>")
         return res
 
 
 class Tokenizer:
-    def __init__(self, model: str, texts: List[str]):
+    def __init__(self, model: str, texts: List[str]) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(model)
         self.model = AutoModelForSequenceClassification.from_pretrained(
             model, attn_implementation="eager"
