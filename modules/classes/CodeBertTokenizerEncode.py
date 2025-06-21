@@ -3,11 +3,13 @@ from typing import Dict, Generator
 from torch import Tensor
 from transformers import AutoTokenizer
 
-from .absclasses.LoadDataAbs import LoadDataAbs
-from .absclasses.LoadTokenizedDataAbs import LoadTokenizedDataAbs
+from modules.absclasses.LoadDataAbs import LoadDataAbs
+from modules.absclasses.LoadTokenizedDataAbs import LoadTokenizedDataAbs
 
 
 class CodeBertTokenizeEncode(LoadTokenizedDataAbs):
+  # this class will be used for tokenizing and encoding things here
+
   tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
 
   def __init__(
