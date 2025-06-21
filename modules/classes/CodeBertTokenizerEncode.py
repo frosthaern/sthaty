@@ -10,8 +10,6 @@ from modules.absclasses.LoadTokenizedDataAbs import LoadTokenizedDataAbs
 class CodeBertTokenizeEncode(LoadTokenizedDataAbs):
   # this class will be used for tokenizing and encoding things here
 
-  tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
-
   def __init__(
     self,
     data: LoadDataAbs,
@@ -23,11 +21,12 @@ class CodeBertTokenizeEncode(LoadTokenizedDataAbs):
     self.padding = padding
     self.max_length = max_length
     self.truncation = truncation
+    self.tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
 
   def __iter__(self) -> Generator[Dict[str, Tensor], None, None]:
     for data in self.data:
       try:
-        yield CodeBertTokenizeEncode.tokenizer(
+        yield self.tokenizer(
           data,
           return_tensors="pt",
           padding=self.padding,

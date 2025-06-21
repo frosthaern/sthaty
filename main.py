@@ -4,5 +4,5 @@ from modules.classes.Jsonl import Jsonl
 if __name__ == "__main__":
   data = Jsonl("dataset.jsonl")
   encodings = CodeBertTokenizeEncode(data)
-  for e in encodings:
-    print(e["input_ids"])
+  # take encodings and extract attention heads
+  # and save it in a file ig, i am not sure
