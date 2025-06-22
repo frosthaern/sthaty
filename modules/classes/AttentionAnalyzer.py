@@ -1,10 +1,13 @@
-from typing import Generator, Dict
-from torch import Tensor
-
+from modules.classes.AttentionExtractor import AttentionExtractor
 
 class AttentionAnalyzer:
-  def __init__(self, encodings: Generator[Dict[str, Tensor], None, None]):
-    self.encodings = encodings
+  def __init__(self, extractor: AttentionExtractor):
+    self.extractor = extractor
+    self.attentions = [attentions for attentions in self.extractor]
+    # extract attention heads and put it in a format that is good for doing statistics and analysis
 
-  def analyze(self):
-    pass
+  def print_attention_shape(self):
+    for a in self.attentions:
+      print(a.shape)
+
+  
