@@ -1,5 +1,8 @@
 from transformers import AutoModel
+from typing import Generator, Dict
 import torch
+from collections import defaultdict
+from torch import Tensor
 
 from modules.absclasses.LoadTokenizedDataAbs import LoadTokenizedDataAbs
 
@@ -9,10 +12,18 @@ class AttentionExtractor:
     self.encoder = encoder
     self.model = AutoModel.from_pretrained("microsoft/codebert-base", attn_implementation="eager")
 
-  def __iter__(self): # add the shape of the tensor here
+  def __iter__(self) -> Generator[Dict[str, Tensor], None, None]: 
     for encodings in self.encoder:
-      attention_heads =  self.model(**encodings, output_attentions=True).attentions
-      heads = []
+      attention_head_and_special_symbols = defaultdict(Tensor)
+      attention_heads =  self.model(
+        input_ids=encodings["input_ids"],
+        attention_mask=encodings["attention_mask"],
+        output_attentions=True
+      ).attentions
+      heads_per_layer = []
       for ah in attention_heads:
-        heads.append(ah.squeeze())
-      yield torch.stack(heads, dim=0)
+        heads_per_layer.append(ah.squeeze())
+      attention_head_and_special_symbols["heads"] = torch.stack(heads_per_layer, dim=0)
+      attention_head_and_special_symbols["special_ids"] = encodings["special_ids"]
+      yield attention_head_and_special_symbols
+      

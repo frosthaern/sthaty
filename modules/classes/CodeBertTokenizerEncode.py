@@ -26,13 +26,23 @@ class CodeBertTokenizeEncode(LoadTokenizedDataAbs):
   def __iter__(self) -> Generator[Dict[str, Tensor], None, None]:
     for data in self.data:
       try:
-        yield self.tokenizer(
-          data,
+        encodings = self.tokenizer(
+          data["query"],
+          data["code"],
           return_tensors="pt",
           padding=self.padding,
           max_length=self.max_length,
           truncation=self.truncation,
+          add_special_tokens=True,
         )
+        token_ids = encodings["input_ids"][0].tolist()
+        tokens = self.tokenizer.convert_ids_to_tokens(token_ids)
+        special_ids = []
+        for i, t in enumerate(tokens):
+          if t in ["<s>", "</s>"]:
+            special_ids.append(i)
+        encodings["special_ids"] = special_ids
+        yield encodings
       except Exception as e:
         print(f"{e} happened while tokenizeEncoding")
         raise e

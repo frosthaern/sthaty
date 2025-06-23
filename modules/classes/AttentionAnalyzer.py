@@ -6,8 +6,7 @@ class AttentionAnalyzer:
     self.attentions = [attentions for attentions in self.extractor]
     # extract attention heads and put it in a format that is good for doing statistics and analysis
 
-  def print_attention_shape(self):
+  def print_info(self):
     for a in self.attentions:
-      print(a.shape)
-
-  
+      print(a["heads"].shape)
+      print(a["special_ids"])

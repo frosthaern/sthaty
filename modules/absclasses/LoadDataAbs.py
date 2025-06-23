@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Generator
+from typing import Generator, Dict
 
 # any class that helps in loading the dataset should implement this, abstractmethod
 # and it should return a generator of strings
@@ -8,5 +8,5 @@ from typing import Generator
 
 class LoadDataAbs(ABC):
   @abstractmethod
-  def __iter__(self) -> Generator[str, None, None]:
+  def __iter__(self) -> Generator[Dict, None, None]:
     raise NotImplementedError
