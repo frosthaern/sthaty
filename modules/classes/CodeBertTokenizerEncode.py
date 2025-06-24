@@ -41,7 +41,6 @@ class CodeBertTokenizeEncode(LoadTokenizedDataAbs):
         for i, t in enumerate(tokens):
           if t in ["<s>", "</s>"]:
             special_ids.append(i)
-        print(f"special_ids: {special_ids}")
         encodings["special_ids"] = special_ids
         yield encodings
       except Exception as e:

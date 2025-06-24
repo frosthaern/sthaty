@@ -25,4 +25,6 @@ class AttentionAnalyzer:
           entropy[layer][head] = np.mean(token_entropies)
       yield entropy # this is a 12 x 12 np array
 
-  
+  # have to try umap
+  # then pca -> umap pipeline
+  # then i have to see which one is giving better results

@@ -12,5 +12,3 @@ if __name__ == "__main__":
   encodings = CodeBertTokenizeEncode(data)
   attentions = AttentionExtractor(encodings)
   analyzer = AttentionAnalyzer(attentions)
-  entropy = analyzer.entropy()
-  print(f"{next(entropy).flatten()}")
