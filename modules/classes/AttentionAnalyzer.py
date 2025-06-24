@@ -39,7 +39,7 @@ class AttentionAnalyzer:
       yield pr
 
   def umap(self, vectors: List[NDArray[np.float64]]) -> Generator[NDArray[np.float64], None, None]:
-    umap_reducer = UMAP(n_components=30, random_state=42)
+    umap_reducer = UMAP(n_components=30, random_state=42, n_jobs=-1)
     umap_result = umap_reducer.fit_transform([dp for dp in vectors])
     for ur in umap_result:
       yield ur
