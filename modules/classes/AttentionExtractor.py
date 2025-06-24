@@ -49,11 +49,18 @@ class AttentionExtractor:
             
             # Process each item in the batch
             results = []
-            for i, (attention_heads, special_ids) in enumerate(zip(outputs.attentions, [b['special_ids'] for b in batch])):
-                heads_per_layer = [ah[i].cpu() for ah in attention_heads]  # Move to CPU to free GPU memory
+            batch_special_ids = [b['special_ids'] for b in batch]
+
+            # Iterate over each sample in the batch (dimension 0)
+            for sample_idx in range(len(batch)):
+                # For the current sample, collect attention from every layer
+                # Shape of layer_attn: [batch, heads, seq_len, seq_len]
+                heads_per_layer = [layer_attn[sample_idx].cpu() for layer_attn in outputs.attentions]
+
                 results.append({
+                    # Stack so that resulting tensor is [layers, heads, seq_len, seq_len]
                     'heads': torch.stack(heads_per_layer, dim=0),
-                    'special_ids': special_ids
+                    'special_ids': batch_special_ids[sample_idx]
                 })
             
             return results

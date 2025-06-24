@@ -49,11 +49,16 @@ class AttentionAnalyzer:
         if total is None and hasattr(iterable, '__len__'):
             total = len(iterable)
             
+        # Make sure we don't provide the `leave` argument twice. If the caller
+        # already supplied it via **kwargs we respect that value, otherwise we
+        # default to False so that intermediate bars disappear and the console
+        # output stays clean.
+        kwargs.setdefault("leave", False)
+
         return tqdm(
             iterable,
             desc=desc,
             total=total,
-            leave=False,
             **kwargs
         )
 
