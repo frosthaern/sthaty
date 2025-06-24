@@ -12,6 +12,5 @@ if __name__ == "__main__":
   encodings = CodeBertTokenizeEncode(data)
   attentions = AttentionExtractor(encodings)
   analyzer = AttentionAnalyzer(attentions)
-  analyzer.print_info()
-  # Take encodings and extract attention heads
-  # and save it in a file ig, i am not sure
+  entropy = analyzer.entropy()
+  print(f"{next(entropy).flatten()}")
