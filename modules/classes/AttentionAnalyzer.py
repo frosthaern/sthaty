@@ -1,6 +1,9 @@
 from modules.classes.AttentionExtractor import AttentionExtractor
-from typing import Generator
+from sklearn.decomposition import PCA
+from umap import UMAP
+from typing import Generator, List
 import numpy as np
+from numpy.typing import NDArray
 
 class AttentionAnalyzer:
   def __init__(self, extractor: AttentionExtractor):
@@ -28,3 +31,15 @@ class AttentionAnalyzer:
   # have to try umap
   # then pca -> umap pipeline
   # then i have to see which one is giving better results
+
+  def pca(self, vectors: List[NDArray[np.float64]]) -> Generator[NDArray[np.float64], None, None]:
+    pca_reducer = PCA(n_components=30)
+    pca_result = pca_reducer.fit_transform([dp for dp in vectors])
+    for pr in pca_result:
+      yield pr
+
+  def umap(self, vectors: List[NDArray[np.float64]]) -> Generator[NDArray[np.float64], None, None]:
+    umap_reducer = UMAP(n_components=30, random_state=42)
+    umap_result = umap_reducer.fit_transform([dp for dp in vectors])
+    for ur in umap_result:
+      yield ur
