@@ -13,8 +13,7 @@ if __name__ == "__main__":
   attentions = AttentionExtractor(encodings)
   analyzer = AttentionAnalyzer(attentions)
   entropy_values = [en.flatten() for en in analyzer.entropy()]
-  pca_result = [pr for pr in analyzer.pca(entropy_values)]
-  umap_result = [ur for ur in analyzer.umap(pca_result)]
-  print(f"{len(umap_result)}")
-  print(f"{umap_result[0].shape}")
+  umap_res = analyzer.umap(entropy_values)
+  for ur in umap_res:
+    print(f"{ur.shape}")
     
