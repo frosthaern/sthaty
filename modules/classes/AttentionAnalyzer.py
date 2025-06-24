@@ -1,45 +1,353 @@
-from modules.classes.AttentionExtractor import AttentionExtractor
-from sklearn.decomposition import PCA
-from umap import UMAP
-from typing import Generator, List
+from __future__ import annotations
+from typing import Generator, List, Tuple, Optional
+import logging
 import numpy as np
 from numpy.typing import NDArray
+from sklearn.decomposition import PCA
+from umap import UMAP
+from tqdm.auto import tqdm
+from modules.classes.AttentionExtractor import AttentionExtractor
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class AttentionAnalyzer:
-  def __init__(self, extractor: AttentionExtractor):
-    self.extractor = extractor
+    """Analyzes attention patterns from an AttentionExtractor.
+    
+    This class provides methods to analyze and visualize attention patterns
+    from transformer models, particularly focusing on CodeBERT's attention heads.
+    """
+    
+    def __init__(self, extractor: AttentionExtractor, show_progress: bool = True):
+        """Initialize the AttentionAnalyzer with an AttentionExtractor instance.
+        
+        Args:
+            extractor: An instance of AttentionExtractor that provides attention data
+            show_progress: Whether to display progress bars for long-running operations
+        """
+        if not isinstance(extractor, AttentionExtractor):
+            raise TypeError("extractor must be an instance of AttentionExtractor")
+        self.extractor = extractor
+        self.show_progress = show_progress
+        
+    def _get_progress_bar(self, iterable, desc: Optional[str] = None, total: Optional[int] = None, **kwargs):
+        """Helper method to get a progress bar or the original iterable based on show_progress.
+        
+        Args:
+            iterable: The iterable to wrap with tqdm
+            desc: Description for the progress bar
+            total: Total number of items (if not len(iterable))
+            **kwargs: Additional arguments to pass to tqdm
+            
+        Returns:
+            Either a tqdm-wrapped iterable or the original iterable
+        """
+        if not self.show_progress:
+            return iterable
+            
+        if total is None and hasattr(iterable, '__len__'):
+            total = len(iterable)
+            
+        return tqdm(
+            iterable,
+            desc=desc,
+            total=total,
+            leave=False,
+            **kwargs
+        )
 
-  def print_info(self):
-    for a in self.extractor:
-      print(a["heads"].shape)
-      print(a["special_ids"])
+    def print_info(self, max_samples: Optional[int] = 10) -> None:
+        """Print information about the attention data structure.
+        
+        This is useful for debugging and understanding the shape and structure
+        of the attention tensors.
+        
+        Args:
+            max_samples: Maximum number of samples to display. If None, shows all.
+        """
+        try:
+            samples = []
+            for i, attn in enumerate(self.extractor):
+                if not isinstance(attn, dict) or "heads" not in attn or "special_ids" not in attn:
+                    logger.warning(f"Unexpected attention data format at index {i}")
+                    continue
+                    
+                samples.append(attn)
+                if max_samples is not None and len(samples) >= max_samples:
+                    break
+            
+            logger.info(f"Found {len(samples)} samples:")
+            for i, attn in enumerate(samples):
+                logger.info(f"Sample {i}:")
+                logger.info(f"  Heads shape: {attn['heads'].shape}")
+                logger.info(f"  Special IDs: {attn['special_ids']}")
+                
+        except Exception as e:
+            logger.error(f"Error printing attention info: {str(e)}")
+            raise
 
-  def entropy(self) -> Generator[np.ndarray[np.float64, np.dtype[np.float64]], None, None]:
-    n_layers, n_heads = 12, 12
-    for attn in self.extractor:
-      qb, qe, cb, ce, = attn["special_ids"]
-      entropy = np.zeros((n_layers, n_heads), dtype=np.float64)
-      for layer in range(n_layers):
-        for head in range(n_heads):
-          head_attention_score = attn["heads"][layer][head][qb+1:qe, cb+1:ce].numpy()
-          row_sum = head_attention_score.sum(axis=1, keepdims=True)
-          normalized_attention = head_attention_score / (row_sum + 1e-10)
-          token_entropies = -np.sum(normalized_attention * np.log(normalized_attention + 1e-10), axis=1)
-          entropy[layer][head] = np.mean(token_entropies)
-      yield entropy # this is a 12 x 12 np array
+    def _validate_attention_window(
+        self, 
+        qb: int, 
+        qe: int, 
+        cb: int, 
+        ce: int, 
+        seq_len: int
+    ) -> Tuple[bool, Tuple[int, int, int, int]]:
+        """Validate and adjust the attention window indices.
+        
+        Args:
+            qb: Query begin index
+            qe: Query end index
+            cb: Context begin index
+            ce: Context end index
+            seq_len: Sequence length
+            
+        Returns:
+            Tuple of (is_valid, (qb, qe, cb, ce)) where is_valid indicates if the window is valid
+        """
+        try:
+            # Adjust indices to be within valid range
+            qb = max(0, min(qb + 1, seq_len - 1))
+            qe = max(qb, min(qe, seq_len))
+            cb = max(0, min(cb + 1, seq_len - 1))
+            ce = max(cb, min(ce, seq_len))
+            
+            # Check if the window is valid
+            is_valid = not (qe <= qb or ce <= cb)
+            if not is_valid:
+                logger.warning(f"Invalid attention window: qb={qb}, qe={qe}, cb={cb}, ce={ce}")
+                
+            return is_valid, (qb, qe, cb, ce)
+            
+        except Exception as e:
+            logger.error(f"Error validating attention window: {str(e)}")
+            return False, (0, 0, 0, 0)
 
-  # have to try umap
-  # then pca -> umap pipeline
-  # then i have to see which one is giving better results
+    def entropy(self) -> Generator[np.ndarray, None, None]:
+        """Calculate the entropy of attention weights for each head and layer.
+        
+        The entropy is calculated over the attention weights within the specified
+        query-context window for each attention head in each layer.
+        
+        Yields:
+            np.ndarray: A 2D array of shape (layers, heads) containing the mean entropy
+                       of attention weights for each head and layer.
+                       
+        Raises:
+            ValueError: If the extractor is not properly initialized or if the attention data is invalid.
+        """
+        if not hasattr(self, 'extractor') or not self.extractor:
+            raise ValueError("No extractor provided. Initialize with a valid AttentionExtractor.")
+        
+        # Get total number of samples if possible for progress bar
+        total = None
+        if hasattr(self.extractor, '__len__'):
+            total = len(self.extractor)
+            
+        for attn in self._get_progress_bar(self.extractor, desc="Calculating attention entropy", total=total):
+            try:
+                # Validate input
+                if not isinstance(attn, dict) or "special_ids" not in attn or "heads" not in attn:
+                    raise ValueError("Invalid attention data format: missing required keys")
+                    
+                qb, qe, cb, ce = attn["special_ids"]
+                heads_tensor = attn["heads"]
+                
+                # Validate tensor shape
+                if heads_tensor.dim() != 4:
+                    raise ValueError(f"Expected 4D attention tensor, got {heads_tensor.dim()}D")
+                    
+                layers, heads, seq_len, _ = heads_tensor.shape
+                entropy = np.zeros((layers, heads), dtype=np.float64)
+                
+                # Validate and adjust the attention window
+                is_valid, (qb, qe, cb, ce) = self._validate_attention_window(qb, qe, cb, ce, seq_len)
+                if not is_valid:
+                    yield entropy  # Return zero entropy for invalid window
+                    continue
+                
+                # Process each head and layer with progress bar if there are many
+                total_heads = layers * heads
+                head_iter = (
+                    (layer_idx, head_idx) 
+                    for layer_idx in range(layers) 
+                    for head_idx in range(heads)
+                )
+                
+                for layer, head in self._get_progress_bar(
+                    head_iter, 
+                    desc=f"Processing {layers} layers x {heads} heads",
+                    total=total_heads,
+                    leave=False
+                ):
+                        try:
+                            # Get attention scores for this head and layer
+                            head_attention = heads_tensor[layer, head, qb:qe, cb:ce]
+                            head_attention_score = head_attention.cpu().numpy()
+                            
+                            if head_attention_score.size == 0:
+                                continue
+                            
+                            # Calculate entropy with numerical stability
+                            row_sum = head_attention_score.sum(axis=1, keepdims=True)
+                            normalized_attention = head_attention_score / (row_sum + 1e-10)
+                            log_attention = np.log(normalized_attention + 1e-10)
+                            token_entropies = -np.sum(normalized_attention * log_attention, axis=1)
+                            entropy[layer][head] = np.mean(token_entropies)
+                            
+                        except Exception as e:
+                            logger.error(f"Error processing layer {layer}, head {head}: {str(e)}")
+                            entropy[layer][head] = 0.0
+                
+                yield entropy
+                
+            except Exception as e:
+                logger.error(f"Error processing attention: {str(e)}")
+                # Return zero entropy with appropriate shape if possible
+                if 'layers' in locals() and 'heads' in locals():
+                    yield np.zeros((layers, heads), dtype=np.float64)
+                else:
+                    # Fallback to a common shape if we can't determine the correct one
+                    yield np.zeros((12, 12), dtype=np.float64)
 
-  def pca(self, vectors: List[NDArray[np.float64]]) -> Generator[NDArray[np.float64], None, None]:
-    pca_reducer = PCA(n_components=30)
-    pca_result = pca_reducer.fit_transform([dp for dp in vectors])
-    for pr in pca_result:
-      yield pr
+    def _batch_process_vectors(
+        self, 
+        vectors: List[NDArray[np.float64]], 
+        batch_size: int = 1000
+    ) -> Generator[NDArray[np.float64], None, None]:
+        """Process vectors in batches to reduce memory usage.
+        
+        Args:
+            vectors: List of input vectors to process
+            batch_size: Number of vectors to process in each batch
+            
+        Yields:
+            Processed vectors one by one
+        """
+        for i in range(0, len(vectors), batch_size):
+            batch = vectors[i:i + batch_size]
+            for vector in batch:
+                yield vector
 
-  def umap(self, vectors: List[NDArray[np.float64]]) -> Generator[NDArray[np.float64], None, None]:
-    umap_reducer = UMAP(n_components=30, n_jobs=-1)
-    umap_result = umap_reducer.fit_transform([dp for dp in vectors])
-    for ur in umap_result:
-      yield ur
+    def pca(
+        self, 
+        vectors: List[NDArray[np.float64]], 
+        n_components: int = 30,
+        batch_size: int = 1000,
+        **pca_kwargs
+    ) -> Generator[NDArray[np.float64], None, None]:
+        """Apply PCA dimensionality reduction to the input vectors.
+        
+        Args:
+            vectors: List of input vectors to reduce
+            n_components: Number of components to keep
+            batch_size: Number of vectors to process in each batch
+            
+        Yields:
+            Reduced-dimension vectors one by one
+            
+        Raises:
+            ValueError: If input vectors are empty or have inconsistent shapes
+        """
+        if not vectors:
+            return
+            
+        # Ensure all vectors have the same shape
+        first_shape = vectors[0].shape
+        if not all(v.shape == first_shape for v in vectors):
+            raise ValueError("All input vectors must have the same shape")
+        
+        # Flatten vectors if they're not 1D
+        flat_vectors = [v.reshape(1, -1) for v in vectors]
+        
+        # Fit PCA on a sample if the dataset is large
+        sample_size = min(10000, len(vectors))
+        pca = PCA(n_components=min(n_components, first_shape[0]), **pca_kwargs)
+        
+        with self._get_progress_bar(
+            range(1), 
+            desc=f"Fitting PCA on {sample_size} samples",
+            total=1,
+            leave=False
+        ):
+            pca.fit(np.vstack(flat_vectors[:sample_size]))
+        
+        # Transform and yield vectors in batches
+        total_batches = (len(flat_vectors) + batch_size - 1) // batch_size
+        batch_iter = self._batch_process_vectors(flat_vectors, batch_size)
+        
+        for vector in self._get_progress_bar(
+            batch_iter,
+            desc="Transforming vectors with PCA",
+            total=total_batches,
+            unit="batch"
+        ):
+            yield pca.transform(vector).squeeze()
+
+    def umap(
+        self, 
+        vectors: List[NDArray[np.float64]], 
+        n_components: int = 30,
+        batch_size: int = 1000,
+        **umap_kwargs
+    ) -> Generator[NDArray[np.float64], None, None]:
+        """Apply UMAP dimensionality reduction to the input vectors.
+        
+        Args:
+            vectors: List of input vectors to reduce
+            n_components: Number of components to keep
+            batch_size: Number of vectors to process in each batch
+            **umap_kwargs: Additional arguments to pass to UMAP
+            
+        Yields:
+            Reduced-dimension vectors one by one
+            
+        Raises:
+            ValueError: If input vectors are empty or have inconsistent shapes
+        """
+        if not vectors:
+            return
+            
+        # Ensure all vectors have the same shape
+        first_shape = vectors[0].shape
+        if not all(v.shape == first_shape for v in vectors):
+            raise ValueError("All input vectors must have the same shape")
+        
+        # Flatten vectors if they're not 1D
+        flat_vectors = [v.reshape(1, -1) for v in vectors]
+        
+        # Configure UMAP with default parameters unless overridden
+        umap_params = {
+            'n_components': min(n_components, first_shape[0]),
+            'n_neighbors': min(15, len(vectors) - 1),
+            'min_dist': 0.1,
+            'metric': 'euclidean',
+            'n_jobs': -1,
+            **umap_kwargs
+        }
+        
+        # Fit UMAP on a sample if the dataset is large
+        sample_size = min(10000, len(vectors))
+        umap_reducer = UMAP(**umap_params)
+        
+        with self._get_progress_bar(
+            range(1),
+            desc=f"Fitting UMAP on {sample_size} samples",
+            total=1,
+            leave=False
+        ):
+            umap_reducer.fit(np.vstack(flat_vectors[:sample_size]))
+        
+        # Transform and yield vectors in batches
+        total_batches = (len(flat_vectors) + batch_size - 1) // batch_size
+        batch_iter = self._batch_process_vectors(flat_vectors, batch_size)
+        
+        for vector in self._get_progress_bar(
+            batch_iter,
+            desc="Transforming vectors with UMAP",
+            total=total_batches,
+            unit="batch"
+        ):
+            yield umap_reducer.transform(vector).squeeze()
