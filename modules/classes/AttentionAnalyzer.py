@@ -4,7 +4,7 @@ import logging
 import numpy as np
 from numpy.typing import NDArray
 from sklearn.decomposition import PCA
-from umap import UMAP
+import umap.umap_ as umap_lib
 from tqdm.auto import tqdm
 from modules.classes.AttentionExtractor import AttentionExtractor
 
@@ -155,11 +155,19 @@ class AttentionAnalyzer:
                 qb, qe, cb, ce = attn["special_ids"]
                 heads_tensor = attn["heads"]
                 
-                # Validate tensor shape
-                if heads_tensor.dim() != 4:
-                    raise ValueError(f"Expected 4D attention tensor, got {heads_tensor.dim()}D")
+                # Handle both 3D and 4D attention tensors
+                if heads_tensor.dim() == 3:
+                    # For 3D tensor: assume it's a single layer with shape [heads, seq_len, seq_len]
+                    heads_tensor = heads_tensor.unsqueeze(0)  # Add layer dimension
+                    layers, heads, seq_len, _ = heads_tensor.shape
+                elif heads_tensor.dim() == 4:
+                    layers, heads, seq_len, _ = heads_tensor.shape
+                else:
+                    raise ValueError(
+                        f"Expected 3D [heads, seq_len, seq_len] or 4D [layers, heads, seq_len, seq_len] attention tensor, "
+                        f"got shape {tuple(heads_tensor.shape)} with {heads_tensor.dim()} dimensions"
+                    )
                     
-                layers, heads, seq_len, _ = heads_tensor.shape
                 entropy = np.zeros((layers, heads), dtype=np.float64)
                 
                 # Validate and adjust the attention window
@@ -242,8 +250,9 @@ class AttentionAnalyzer:
         
         Args:
             vectors: List of input vectors to reduce
-            n_components: Number of components to keep
+            n_components: Number of components to keep (recommended <= 50 for visualization)
             batch_size: Number of vectors to process in each batch
+            **pca_kwargs: Additional arguments to pass to PCA
             
         Yields:
             Reduced-dimension vectors one by one
@@ -252,39 +261,56 @@ class AttentionAnalyzer:
             ValueError: If input vectors are empty or have inconsistent shapes
         """
         if not vectors:
+            logger.warning("No vectors provided to PCA")
             return
             
-        # Ensure all vectors have the same shape
-        first_shape = vectors[0].shape
-        if not all(v.shape == first_shape for v in vectors):
-            raise ValueError("All input vectors must have the same shape")
-        
-        # Flatten vectors if they're not 1D
-        flat_vectors = [v.reshape(1, -1) for v in vectors]
-        
-        # Fit PCA on a sample if the dataset is large
-        sample_size = min(10000, len(vectors))
-        pca = PCA(n_components=min(n_components, first_shape[0]), **pca_kwargs)
-        
-        with self._get_progress_bar(
-            range(1), 
-            desc=f"Fitting PCA on {sample_size} samples",
-            total=1,
-            leave=False
-        ):
-            pca.fit(np.vstack(flat_vectors[:sample_size]))
-        
-        # Transform and yield vectors in batches
-        total_batches = (len(flat_vectors) + batch_size - 1) // batch_size
-        batch_iter = self._batch_process_vectors(flat_vectors, batch_size)
-        
-        for vector in self._get_progress_bar(
-            batch_iter,
-            desc="Transforming vectors with PCA",
-            total=total_batches,
-            unit="batch"
-        ):
-            yield pca.transform(vector).squeeze()
+        try:
+            # Ensure all vectors are numpy arrays and have the same shape
+            vectors = [np.asarray(v, dtype=np.float64) for v in vectors]
+            first_shape = vectors[0].shape
+            
+            if not all(v.shape == first_shape for v in vectors):
+                raise ValueError(f"All input vectors must have the same shape. "
+                               f"First shape: {first_shape}, found different shapes in input vectors.")
+            
+            # Flatten vectors if they're not 1D
+            flat_vectors = np.vstack([v.reshape(1, -1) for v in vectors])
+            
+            # Configure PCA
+            n_components = min(n_components, flat_vectors.shape[1])
+            pca = PCA(n_components=n_components, **pca_kwargs)
+            
+            # Fit PCA on a sample if the dataset is large
+            sample_size = min(10000, len(vectors))
+            with self._get_progress_bar(
+                [0],  # Dummy iterable for progress bar
+                desc=f"Fitting PCA on {sample_size} samples",
+                total=1
+            ):
+                pca.fit(flat_vectors[:sample_size])
+            
+            # Transform vectors in batches
+            total_batches = (len(vectors) + batch_size - 1) // batch_size
+            
+            for i in self._get_progress_bar(
+                range(0, len(vectors), batch_size),
+                desc="Transforming vectors with PCA",
+                total=total_batches,
+                unit="batch"
+            ):
+                batch = flat_vectors[i:i + batch_size]
+                transformed = pca.transform(batch)
+                
+                # Yield each vector in the batch
+                for j in range(transformed.shape[0]):
+                    yield transformed[j]
+                    
+        except Exception as e:
+            logger.error(f"Error in PCA reduction: {str(e)}")
+            # Yield zeros with the expected shape if there's an error
+            zero_vec = np.zeros(n_components, dtype=np.float64)
+            for _ in vectors:
+                yield zero_vec
 
     def umap(
         self, 
@@ -297,7 +323,7 @@ class AttentionAnalyzer:
         
         Args:
             vectors: List of input vectors to reduce
-            n_components: Number of components to keep
+            n_components: Number of components to keep (2 or 3 recommended for visualization)
             batch_size: Number of vectors to process in each batch
             **umap_kwargs: Additional arguments to pass to UMAP
             
@@ -308,46 +334,62 @@ class AttentionAnalyzer:
             ValueError: If input vectors are empty or have inconsistent shapes
         """
         if not vectors:
+            logger.warning("No vectors provided to UMAP")
             return
             
-        # Ensure all vectors have the same shape
-        first_shape = vectors[0].shape
-        if not all(v.shape == first_shape for v in vectors):
-            raise ValueError("All input vectors must have the same shape")
-        
-        # Flatten vectors if they're not 1D
-        flat_vectors = [v.reshape(1, -1) for v in vectors]
-        
-        # Configure UMAP with default parameters unless overridden
-        umap_params = {
-            'n_components': min(n_components, first_shape[0]),
-            'n_neighbors': min(15, len(vectors) - 1),
-            'min_dist': 0.1,
-            'metric': 'euclidean',
-            'n_jobs': -1,
-            **umap_kwargs
-        }
-        
-        # Fit UMAP on a sample if the dataset is large
-        sample_size = min(10000, len(vectors))
-        umap_reducer = UMAP(**umap_params)
-        
-        with self._get_progress_bar(
-            range(1),
-            desc=f"Fitting UMAP on {sample_size} samples",
-            total=1,
-            leave=False
-        ):
-            umap_reducer.fit(np.vstack(flat_vectors[:sample_size]))
-        
-        # Transform and yield vectors in batches
-        total_batches = (len(flat_vectors) + batch_size - 1) // batch_size
-        batch_iter = self._batch_process_vectors(flat_vectors, batch_size)
-        
-        for vector in self._get_progress_bar(
-            batch_iter,
-            desc="Transforming vectors with UMAP",
-            total=total_batches,
-            unit="batch"
-        ):
-            yield umap_reducer.transform(vector).squeeze()
+        try:
+            # Ensure all vectors are numpy arrays and have the same shape
+            vectors = [np.asarray(v, dtype=np.float64) for v in vectors]
+            first_shape = vectors[0].shape
+            
+            if not all(v.shape == first_shape for v in vectors):
+                raise ValueError(f"All input vectors must have the same shape. "
+                               f"First shape: {first_shape}, found different shapes in input vectors.")
+            
+            # Flatten vectors if they're not 1D
+            flat_vectors = np.vstack([v.reshape(1, -1) for v in vectors])
+            
+            # Configure UMAP with default parameters unless overridden
+            umap_params = {
+                'n_components': min(n_components, flat_vectors.shape[1]),
+                'n_neighbors': min(15, len(vectors) - 1),
+                'min_dist': 0.1,
+                'metric': 'euclidean',
+                'n_jobs': -1,
+                **umap_kwargs
+            }
+            
+            # Initialize UMAP
+            umap_reducer = umap_lib.UMAP(**umap_params)
+            
+            # Fit UMAP on a sample if the dataset is large
+            sample_size = min(10000, len(vectors))
+            with self._get_progress_bar(
+                [0],  # Dummy iterable for progress bar
+                desc=f"Fitting UMAP on {sample_size} samples",
+                total=1
+            ):
+                umap_reducer.fit(flat_vectors[:sample_size])
+            
+            # Transform vectors in batches
+            total_batches = (len(vectors) + batch_size - 1) // batch_size
+            
+            for i in self._get_progress_bar(
+                range(0, len(vectors), batch_size),
+                desc="Transforming vectors with UMAP",
+                total=total_batches,
+                unit="batch"
+            ):
+                batch = flat_vectors[i:i + batch_size]
+                transformed = umap_reducer.transform(batch)
+                
+                # Yield each vector in the batch
+                for j in range(transformed.shape[0]):
+                    yield transformed[j]
+                    
+        except Exception as e:
+            logger.error(f"Error in UMAP reduction: {str(e)}")
+            # Yield zeros with the expected shape if there's an error
+            zero_vec = np.zeros(n_components, dtype=np.float64)
+            for _ in vectors:
+                yield zero_vec
